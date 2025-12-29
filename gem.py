@@ -31,13 +31,18 @@ if not API_KEY:
 MODEL_ID = "gemini-3-flash-preview" 
 
 # System prompt for expert analysis
-SYSTEM_PROMPT = """You are an expert analyst assistant. When analyzing files:
+SYSTEM_PROMPT = """You are an expert analyst assistant running on Gemini 3 Flash with advanced multimodal capabilities.
+
+When analyzing files:
 - For text/PDF documents: Always reference page numbers when available
+- For images/charts/diagrams: Use your vision capabilities to describe visual elements, trends, patterns
 - For video content: Provide timestamps in MM:SS format (minutes:seconds) for specific moments or events
 - For audio content: Provide timestamps in MM:SS format (minutes:seconds) for key points
-- For spreadsheets/data: Reference cell locations or row/column numbers
+- For spreadsheets/data: Reference cell locations or row/column numbers, identify trends in charts
+- For presentations: Describe slide layouts, visual elements, charts, and diagrams
 - Provide clear, detailed analysis that synthesizes information across all provided files
-- When comparing multiple files, explicitly note connections and discrepancies"""
+- When comparing multiple files, explicitly note connections and discrepancies
+- Use your native vision understanding to analyze charts, graphs, images, and visual data"""
 
 client = genai.Client(api_key=API_KEY)
 
@@ -52,6 +57,7 @@ def main(page: ft.Page):
 
     uploaded_files = []
     conversation_history = []
+    current_cache_name = None  # Track context cache
     
     # Folder collapse state
     folders_collapsed = {
@@ -62,6 +68,44 @@ def main(page: ft.Page):
         "links": False,
         "other": False
     }
+    
+    def update_shelf_cache():
+        """Create or update context cache for all files on shelf"""
+        nonlocal current_cache_name
+        
+        # Delete old cache
+        if current_cache_name:
+            try:
+                client.caches.delete(name=current_cache_name)
+                print(f"Deleted old cache: {current_cache_name}")
+            except Exception as e:
+                print(f"Cache deletion error: {e}")
+            current_cache_name = None
+        
+        # If no files, no cache needed
+        if not uploaded_files:
+            return
+        
+        # Create cache with all files
+        try:
+            file_parts = [
+                types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"]) 
+                for f in uploaded_files
+            ]
+            
+            cache = client.caches.create(
+                model=MODEL_ID,
+                contents=[types.Content(role="user", parts=file_parts)],
+                ttl="3600s"  # 1 hour
+            )
+            current_cache_name = cache.name
+            print(f"Cache created: {cache.name}")
+            status_text.value = f"Cache created ({len(uploaded_files)} files)"
+            page.update()
+        except Exception as e:
+            print(f"Cache creation error: {e}")
+            status_text.value = f"Cache error: {e}"
+            page.update()
     
     def export_chat(e):
         """Export chat history as PDF"""
@@ -158,6 +202,13 @@ def main(page: ft.Page):
                 types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")])
             ]
             messages.extend(conversation_history)
+            
+            # Add datastream (files) to token count - they're sent with every message
+            if uploaded_files:
+                datastream_parts = []
+                for f in uploaded_files:
+                    datastream_parts.append(types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"]))
+                messages.append(types.Content(role="user", parts=datastream_parts))
             
             token_response = client.models.count_tokens(model=MODEL_ID, contents=messages)
             total_tokens = token_response.total_tokens
@@ -335,6 +386,7 @@ def main(page: ft.Page):
             removed = uploaded_files.pop(file_index)
             print(f"Removed: {removed['name']}")
             rebuild_shelf()
+            update_shelf_cache()  # Refresh cache
             update_context_meter()
             page.update()
     
@@ -484,6 +536,7 @@ def main(page: ft.Page):
         })
         
         rebuild_shelf()
+        update_shelf_cache()  # Refresh cache after adding file
     
     def upload_file(e):
         # Handle both FilePickerResultEvent and FilePickerUploadEvent for version compatibility
@@ -625,38 +678,68 @@ def main(page: ft.Page):
                 margin=ft.margin.only(left=50, bottom=10)
             )
         )
+        
+        # Add thinking indicator
+        ai_bg = ft.Colors.GREY_900 if page.theme_mode == ft.ThemeMode.DARK else ft.Colors.GREY_200
+        thinking_container = ft.Container(
+            content=ft.Row([
+                ft.ProgressRing(width=20, height=20, stroke_width=2),
+                ft.Text("Thinking...", size=14, italic=True, color=ft.Colors.GREY_400)
+            ], spacing=10),
+            bgcolor=ai_bg,
+            padding=15,
+            border_radius=ft.border_radius.only(top_left=15, top_right=15, bottom_right=15),
+            alignment=ft.alignment.center_left,
+            margin=ft.margin.only(right=50, bottom=10)
+        )
+        chat_list.controls.append(thinking_container)
         page.update()
 
         try:
-            # Build messages with 3 separate contexts:
-            # 1. System prompt
-            # 2. Conversational context (text only, no files)
-            # 3. Datastream context (files, sent once)
-            
+            # Build messages
             messages = []
             
-            # 1. System prompt
+            # System prompt
             messages.append(types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]))
             messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")]))
             
-            # 2. Conversational context (text only)
+            # Conversational context (text only)
             messages.extend(conversation_history)
             
-            # 3. Datastream context (files) + current query
-            datastream_parts = []
-            for f in uploaded_files:
-                datastream_parts.append(types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"]))
-            datastream_parts.append(types.Part(text=user_query))
-            messages.append(types.Content(role="user", parts=datastream_parts))
+            # Add current query
+            messages.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
 
-            response = client.models.generate_content(model=MODEL_ID, contents=messages)
+            # Generate response - use cache if available
+            if current_cache_name:
+                # Use cached files
+                from google.genai.types import GenerateContentConfig
+                config = GenerateContentConfig(cached_content=current_cache_name)
+                response = client.models.generate_content(
+                    model=MODEL_ID,
+                    contents=messages,
+                    config=config
+                )
+                print(f"Used cache: {current_cache_name}")
+            else:
+                # No cache - send files directly (fallback)
+                if uploaded_files:
+                    # Add files to the current query
+                    file_parts = [
+                        types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"])
+                        for f in uploaded_files
+                    ]
+                    # Replace last message with files + query
+                    messages[-1] = types.Content(role="user", parts=file_parts + [types.Part(text=user_query)])
+                
+                response = client.models.generate_content(model=MODEL_ID, contents=messages)
+                print("No cache - sent files directly")
+            
+            # Remove thinking indicator
+            chat_list.controls.remove(thinking_container)
             
             # Store ONLY text in conversation history (no files)
             conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
             conversation_history.append(types.Content(role="model", parts=[types.Part(text=response.text)]))
-            
-            # AI bubble colors based on theme
-            ai_bg = ft.Colors.GREY_900 if page.theme_mode == ft.ThemeMode.DARK else ft.Colors.GREY_200
             
             chat_list.controls.append(
                 ft.Container(
@@ -675,6 +758,9 @@ def main(page: ft.Page):
             
             update_context_meter()
         except Exception as err:
+            # Remove thinking indicator on error
+            if thinking_container in chat_list.controls:
+                chat_list.controls.remove(thinking_container)
             print(f"Chat error: {err}")
             chat_list.controls.append(ft.Text(f"API Error: {err}", color=ft.Colors.RED))
         
