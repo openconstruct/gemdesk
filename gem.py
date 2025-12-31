@@ -15,6 +15,8 @@ from conversions import (
 )
 from charting import generate_chart, parse_chart_json, get_chart_tool_declaration
 from presets import get_preset, get_preset_indicator
+from file_ops import get_mime_type, process_file_upload, handle_file_upload, handle_url_add
+from ui_components import build_shelf_ui, get_file_category
 
 # Flet version compatibility - older versions use lowercase
 if not hasattr(ft, 'Colors'):
@@ -62,6 +64,7 @@ def main(page: ft.Page):
     current_cache_name = None  # Track context cache
     thinking_level = "high"  # Default: high thinking
     active_preset = None  # Track active preset command
+    google_search_enabled = False  # Google Search grounding toggle
     
     # Folder collapse state
     folders_collapsed = {
@@ -186,6 +189,13 @@ def main(page: ft.Page):
         nonlocal thinking_level
         thinking_level = thinking_dropdown.value
         status_text.value = f"Thinking mode: {thinking_level}"
+        page.update()
+    
+    def toggle_google_search(e):
+        """Toggle Google Search grounding"""
+        nonlocal google_search_enabled
+        google_search_enabled = search_toggle.value
+        status_text.value = f"Google Search: {'enabled' if google_search_enabled else 'disabled'}"
         page.update()
     
     def toggle_theme(e):
@@ -425,60 +435,9 @@ def main(page: ft.Page):
         page.update()
     
     def rebuild_shelf():
-        """Rebuild shelf with folders"""
-        shelf_list.controls.clear()
-        
-        # Group files by category
-        categorized = {
-            "documents": [],
-            "images": [],
-            "videos": [],
-            "audio": [],
-            "links": [],
-            "other": []
-        }
-        
-        for idx, f in enumerate(uploaded_files):
-            category = get_file_category(f['name'], f['mime'])
-            categorized[category].append((idx, f))
-        
-        # Display folders
-        folder_names = {
-            "documents": ("Documents", ft.Icons.DESCRIPTION),
-            "images": ("Images", ft.Icons.IMAGE),
-            "videos": ("Videos", ft.Icons.VIDEO_LIBRARY),
-            "audio": ("Audio", ft.Icons.AUDIOTRACK),
-            "links": ("Links", ft.Icons.LINK),
-            "other": ("Other", ft.Icons.FOLDER)
-        }
-        
-        for category, (label, icon) in folder_names.items():
-            files_in_cat = categorized[category]
-            if not files_in_cat:
-                continue
-            
-            # Folder header
-            collapse_icon = ft.Icons.EXPAND_MORE if not folders_collapsed[category] else ft.Icons.CHEVRON_RIGHT
-            shelf_list.controls.append(
-                ft.Container(
-                    content=ft.Row([
-                        ft.Icon(icon, size=16, color=ft.Colors.GREY_400),
-                        ft.Text(f"{label} ({len(files_in_cat)})", size=12, weight="bold", color=ft.Colors.GREY_400),
-                        ft.IconButton(
-                            icon=collapse_icon,
-                            icon_size=16,
-                            on_click=lambda e, cat=category: toggle_folder(cat)
-                        )
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    padding=5,
-                    margin=ft.margin.only(top=5, bottom=2)
-                )
-            )
-            
-            # Files in folder (if not collapsed)
-            if not folders_collapsed[category]:
-                for idx, f in files_in_cat:
-                    add_shelf_item(f['name'], f['mime'], f['tokens'], idx)
+        shelf_list.controls = build_shelf_ui(uploaded_files, folders_collapsed,
+                                             remove_file, toggle_folder, page)
+        page.update()
     
     def process_file_upload(file_path, file_name, override_mime=None):
         """Common file processing logic"""
@@ -555,136 +514,18 @@ def main(page: ft.Page):
         update_shelf_cache()  # Refresh cache after adding file
     
     def upload_file(e):
-        # Handle both FilePickerResultEvent and FilePickerUploadEvent for version compatibility
-        if not e.files:
-            return
-        
-        if len(uploaded_files) + len(e.files) > MAX_FILES:
-            status_text.value = f"Error: Maximum {MAX_FILES} files"
-            status_text.color = ft.Colors.RED
-            page.update()
-            time.sleep(2)
-            status_text.color = ft.Colors.GREY_500
-            status_text.value = "Ready."
-            page.update()
-            return
-        
-        loading_ring.visible = True
-        upload_btn.disabled = True
-        status_text.value = "Processing..."
-        page.update()
-
-        try:
-            for f in e.files:
-                process_file_upload(f.path, f.name)
-            
-            status_text.value = "Ready."
-            update_context_meter()
-            
-        except Exception as err:
-            print(f"Upload error: {err}")
-            status_text.value = f"Error: {err}"
-        finally:
-            loading_ring.visible = False
-            upload_btn.disabled = False
-            page.update()
+        handle_file_upload(e, uploaded_files, MAX_FILES, client, MODEL_ID,
+                      status_text, loading_ring, upload_btn, page,
+                      rebuild_shelf, update_shelf_cache, update_context_meter)
     
-    def add_url(e):
-        url = url_input.value.strip()
-        if not url:
-            return
-        
-        url_input.value = ""
-        
-        if len(uploaded_files) >= MAX_FILES:
-            status_text.value = f"Error: Maximum {MAX_FILES} files"
-            status_text.color = ft.Colors.RED
-            page.update()
-            time.sleep(2)
-            status_text.color = ft.Colors.GREY_500
-            return
-        
-        loading_ring.visible = True
-        url_btn.disabled = True
-        page.update()
-        
-        try:
-            # Check if it's a direct file URL (PDF, image, video, etc.)
-            if is_direct_file_url(url):
-                status_text.value = f"Downloading file from {url}..."
-                page.update()
-                
-                # Download file
-                temp_file_path = download_file_from_url(url)
-                print(f"DEBUG: Downloaded to: {temp_file_path}")
-                
-                # Get filename from URL
-                from urllib.parse import urlparse
-                url_path = urlparse(url).path
-                filename = url_path.split('/')[-1] if url_path else 'downloaded_file'
-                print(f"DEBUG: Filename from URL: {filename}")
-                
-                # Get MIME type from actual file extension (after download)
-                mime_type = get_mime_type(temp_file_path)
-                print(f"DEBUG: MIME type detected: {mime_type}")
-                
-                # Process like a normal file upload but with explicit MIME
-                process_file_upload(temp_file_path, filename, mime_type)
-                os.unlink(temp_file_path)
-                
-                status_text.value = "Ready."
-                update_context_meter()
-            else:
-                # Scrape as HTML page
-                status_text.value = f"Scraping {url}..."
-                page.update()
-                
-                temp_file = scrape_url(url)
-                
-                with open(temp_file, 'rb') as file_handle:
-                    file_ref = client.files.upload(file=file_handle, config={'mime_type': 'text/plain'})
-                
-                os.unlink(temp_file)
-                
-                while file_ref.state.name == "PROCESSING":
-                    time.sleep(1)
-                    file_ref = client.files.get(name=file_ref.name)
-                
-                if file_ref.state.name == "FAILED":
-                    raise Exception("Failed to process URL content")
-                
-                file_token_count = client.models.count_tokens(
-                    model=MODEL_ID,
-                    contents=[types.Content(role="user", parts=[
-                        types.Part.from_uri(file_uri=file_ref.uri, mime_type=file_ref.mime_type)
-                    ])]
-                )
-                
-                uploaded_files.append({
-                    "name": f"🔗 {url[:30]}...",
-                    "uri": file_ref.uri,
-                    "mime": file_ref.mime_type,
-                    "tokens": file_token_count.total_tokens
-                })
-                
-                rebuild_shelf()
-                status_text.value = "Ready."
-                update_context_meter()
-            
-        except Exception as err:
-            print(f"URL error: {err}")
-            status_text.value = f"Error: {err}"
-        finally:
-            loading_ring.visible = False
-            url_btn.disabled = False
-            page.update()
+    
 
     def send_chat(e):
         nonlocal active_preset, thinking_level
         
         if not chat_input.value:
             return
-        
+                  
         user_query = chat_input.value
         chat_input.value = ""
         
@@ -777,29 +618,39 @@ Other features:
             )
         )
         
-        # Add thinking indicator
+        # Add streaming response container
         ai_bg = ft.Colors.GREY_900 if page.theme_mode == ft.ThemeMode.DARK else ft.Colors.GREY_200
-        thinking_container = ft.Container(
-            content=ft.Row([
-                ft.ProgressRing(width=20, height=20, stroke_width=2),
-                ft.Text("Thinking...", size=14, italic=True, color=ft.Colors.GREY_400)
-            ], spacing=10),
+        
+        # Create response container with initial thinking state
+        response_text = ft.Markdown(
+            "⏳ Thinking...",
+            extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+            code_theme="atom-one-dark"
+        )
+        
+        response_container = ft.Container(
+            content=response_text,
             bgcolor=ai_bg,
             padding=15,
             border_radius=ft.border_radius.only(top_left=15, top_right=15, bottom_right=15),
             alignment=ft.alignment.center_left,
             margin=ft.margin.only(right=50, bottom=10)
         )
-        chat_list.controls.append(thinking_container)
+        
+        chat_list.controls.append(response_container)
         page.update()
 
         try:
             # Build messages
             messages = []
             
-            # System prompt
-            messages.append(types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]))
-            messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")]))
+            # System prompt (use preset if active, otherwise default)
+            if preset_prompt:
+                messages.append(types.Content(role="user", parts=[types.Part(text=preset_prompt)]))
+                messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will analyze according to the specified mode.")]))
+            else:
+                messages.append(types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]))
+                messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")]))
             
             # Conversational context (text only)
             messages.extend(conversation_history)
@@ -807,67 +658,72 @@ Other features:
             # Add current query
             messages.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
 
-            # Generate response - use cache if available
+            # Generate response with streaming
             if current_cache_name:
-                # Use cached files
-                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool, GoogleSearch
+                
+                # Build tools list
+                tools = [Tool(function_declarations=[get_chart_tool_declaration()])]
+                if google_search_enabled:
+                    tools.append(Tool(google_search=GoogleSearch()))
+                
                 config = GenerateContentConfig(
                     cached_content=current_cache_name,
                     thinking_config=ThinkingConfig(thinking_level=thinking_level),
-                    tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
+                    tools=tools
                 )
-                response = client.models.generate_content(
+                stream = client.models.generate_content_stream(
                     model=MODEL_ID,
                     contents=messages,
                     config=config
                 )
-                print(f"Used cache: {current_cache_name}")
             else:
-                # No cache - send files directly (fallback)
+                # No cache - send files directly
                 if uploaded_files:
-                    # Add files to the current query
                     file_parts = [
                         types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"])
                         for f in uploaded_files
                     ]
-                    # Replace last message with files + query
                     messages[-1] = types.Content(role="user", parts=file_parts + [types.Part(text=user_query)])
                 
-                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool, GoogleSearch
+                
+                # Build tools list
+                tools = [Tool(function_declarations=[get_chart_tool_declaration()])]
+                if google_search_enabled:
+                    tools.append(Tool(google_search=GoogleSearch()))
+                
                 config = GenerateContentConfig(
                     thinking_config=ThinkingConfig(thinking_level=thinking_level),
-                    tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
+                    tools=tools
                 )
-                response = client.models.generate_content(
-                    model=MODEL_ID, 
+                stream = client.models.generate_content_stream(
+                    model=MODEL_ID,
                     contents=messages,
                     config=config
                 )
-                print("No cache - sent files directly")
             
-            # Remove thinking indicator
-            chat_list.controls.remove(thinking_container)
-            
-            # Check if response contains function call
+            # Stream response
+            full_text = ""
             function_call = None
-            text_response = ""
             
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    function_call = part.function_call
-                elif hasattr(part, 'text') and part.text:
-                    text_response += part.text
+            for chunk in stream:
+                # Check for function calls
+                for part in chunk.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        function_call = part.function_call
+                    elif hasattr(part, 'text') and part.text:
+                        full_text += part.text
+                        response_text.value = full_text
+                        page.update()
             
             # Handle chart generation if tool was called
             if function_call and function_call.name == "generate_chart":
                 try:
-                    # Extract chart parameters
-                    chart_data = dict(function_call.args)
-                    
-                    # Generate chart
-                    status_text.value = "Generating chart..."
+                    response_text.value = full_text + "\n\n⏳ Generating chart..."
                     page.update()
                     
+                    chart_data = dict(function_call.args)
                     chart_path = generate_chart(chart_data)
                     
                     # Show chart in dialog
@@ -894,49 +750,36 @@ Other features:
                     page.dialog = chart_dialog
                     chart_dialog.open = True
                     
-                    # Add a message about chart generation
-                    text_response = f"📊 **Chart Generated: {chart_data.get('title', 'Chart')}**\n\n" + text_response
-                    
-                    status_text.value = "Ready."
+                    full_text = f"📊 **Chart Generated: {chart_data.get('title', 'Chart')}**\n\n" + full_text
+                    response_text.value = full_text
                     
                 except Exception as chart_err:
-                    text_response = f"❌ Chart generation failed: {chart_err}\n\n" + text_response
+                    full_text = f"❌ Chart generation failed: {chart_err}\n\n" + full_text
+                    response_text.value = full_text
                     print(f"Chart generation error: {chart_err}")
+            
+            page.update()
             
             # Store conversation history
             conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
-            conversation_history.append(types.Content(role="model", parts=[types.Part(text=text_response)]))
-            
-            # Display response
-            chat_list.controls.append(
-                ft.Container(
-                    content=ft.Markdown(
-                        text_response, 
-                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                        code_theme="atom-one-dark"
-                    ),
-                    bgcolor=ai_bg,
-                    padding=15,
-                    border_radius=ft.border_radius.only(top_left=15, top_right=15, bottom_right=15),
-                    alignment=ft.alignment.center_left,
-                    margin=ft.margin.only(right=50, bottom=10)
-                )
-            )
+            conversation_history.append(types.Content(role="model", parts=[types.Part(text=full_text)]))
             
             # Reset preset after use
             if preset_prompt:
                 active_preset = None
-                thinking_level = original_thinking  # Restore original thinking level
+                thinking_level = original_thinking
             
             update_context_meter()
+            
         except Exception as err:
-            # Remove thinking indicator on error
-            if thinking_container in chat_list.controls:
-                chat_list.controls.remove(thinking_container)
+            response_text.value = f"❌ Error: {err}"
             print(f"Chat error: {err}")
-            chat_list.controls.append(ft.Text(f"API Error: {err}", color=ft.Colors.RED))
-        
-        page.update()
+            page.update()
+    
+    def add_url(e):
+        handle_url_add(url_input, uploaded_files, MAX_FILES, client, MODEL_ID,
+                      status_text, loading_ring, url_btn, page,
+                      rebuild_shelf, update_shelf_cache, update_context_meter)
 
     file_picker = ft.FilePicker()
     file_picker.on_result = upload_file
@@ -1021,6 +864,15 @@ Other features:
         tooltip="Thinking depth: minimal (fast) to high (deep reasoning)"
     )
     
+    # Google Search toggle
+    search_toggle = ft.Switch(
+        label="Google Search",
+        value=False,
+        on_change=toggle_google_search,
+        label_position=ft.LabelPosition.LEFT,
+        tooltip="Enable web search grounding"
+    )
+    
     # Theme toggle and export buttons
     theme_btn = ft.IconButton(
         icon=ft.icons.LIGHT_MODE,
@@ -1100,6 +952,7 @@ Other features:
                 ft.Row([export_btn, theme_btn], spacing=0)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             thinking_dropdown,
+            search_toggle,
             ft.Text(f"Max {MAX_FILES} files", size=10, color=ft.Colors.GREY_500),
             ft.Divider(color=ft.Colors.GREY_800),
             upload_btn,
