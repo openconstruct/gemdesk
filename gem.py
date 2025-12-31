@@ -9,10 +9,12 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from conversions import (
-    convert_xlsx_to_csv, convert_ods_to_csv,
+    convert_xlsx_to_csv, convert_ods_to_csv, convert_docx_to_pdf,
     convert_pptx_to_text, convert_odp_to_text, convert_odt_to_text,
     scrape_url, download_file_from_url, is_direct_file_url, generate_thumbnail
 )
+from charting import generate_chart, parse_chart_json, get_chart_tool_declaration
+from presets import get_preset, get_preset_indicator
 
 # Flet version compatibility - older versions use lowercase
 if not hasattr(ft, 'Colors'):
@@ -58,6 +60,8 @@ def main(page: ft.Page):
     uploaded_files = []
     conversation_history = []
     current_cache_name = None  # Track context cache
+    thinking_level = "high"  # Default: high thinking
+    active_preset = None  # Track active preset command
     
     # Folder collapse state
     folders_collapsed = {
@@ -176,6 +180,13 @@ def main(page: ft.Page):
             status_text.value = f"Export error: {err}"
             print(f"Export error: {err}")
             page.update()
+    
+    def change_thinking_level(e):
+        """Change thinking level"""
+        nonlocal thinking_level
+        thinking_level = thinking_dropdown.value
+        status_text.value = f"Thinking mode: {thinking_level}"
+        page.update()
     
     def toggle_theme(e):
         """Toggle between light and dark mode"""
@@ -469,12 +480,20 @@ def main(page: ft.Page):
                 for idx, f in files_in_cat:
                     add_shelf_item(f['name'], f['mime'], f['tokens'], idx)
     
-    def process_file_upload(file_path, file_name):
+    def process_file_upload(file_path, file_name, override_mime=None):
         """Common file processing logic"""
         file_to_upload = file_path
         original_name = file_name
         
-        if file_name.lower().endswith('.xlsx'):
+        print(f"DEBUG process_file_upload: file_path={file_path}, file_name={file_name}, override_mime={override_mime}")
+        
+        # Convert unsupported formats
+        if file_name.lower().endswith('.docx'):
+            status_text.value = f"Converting {file_name} to PDF..."
+            page.update()
+            file_to_upload = convert_docx_to_pdf(file_path)
+            mime_type = 'application/pdf'
+        elif file_name.lower().endswith('.xlsx'):
             status_text.value = f"Converting {file_name}..."
             page.update()
             file_to_upload = convert_xlsx_to_csv(file_path)
@@ -484,11 +503,6 @@ def main(page: ft.Page):
             page.update()
             file_to_upload = convert_ods_to_csv(file_path)
             mime_type = 'text/csv'
-        elif file_name.lower().endswith('.pptx'):
-            status_text.value = f"Converting {file_name}..."
-            page.update()
-            file_to_upload = convert_pptx_to_text(file_path)
-            mime_type = 'text/plain'
         elif file_name.lower().endswith('.odp'):
             status_text.value = f"Converting {file_name}..."
             page.update()
@@ -500,7 +514,9 @@ def main(page: ft.Page):
             file_to_upload = convert_odt_to_text(file_path)
             mime_type = 'text/plain'
         else:
-            mime_type = get_mime_type(file_name)
+            mime_type = override_mime if override_mime else get_mime_type(file_name)
+        
+        print(f"DEBUG: Final mime_type before upload: {mime_type}")
         
         with open(file_to_upload, 'rb') as file_handle:
             file_ref = client.files.upload(file=file_handle, config={'mime_type': mime_type})
@@ -600,14 +616,20 @@ def main(page: ft.Page):
                 
                 # Download file
                 temp_file_path = download_file_from_url(url)
+                print(f"DEBUG: Downloaded to: {temp_file_path}")
                 
                 # Get filename from URL
                 from urllib.parse import urlparse
                 url_path = urlparse(url).path
                 filename = url_path.split('/')[-1] if url_path else 'downloaded_file'
+                print(f"DEBUG: Filename from URL: {filename}")
                 
-                # Process like a normal file upload
-                process_file_upload(temp_file_path, filename)
+                # Get MIME type from actual file extension (after download)
+                mime_type = get_mime_type(temp_file_path)
+                print(f"DEBUG: MIME type detected: {mime_type}")
+                
+                # Process like a normal file upload but with explicit MIME
+                process_file_upload(temp_file_path, filename, mime_type)
                 os.unlink(temp_file_path)
                 
                 status_text.value = "Ready."
@@ -658,11 +680,87 @@ def main(page: ft.Page):
             page.update()
 
     def send_chat(e):
+        nonlocal active_preset, thinking_level
+        
         if not chat_input.value:
             return
         
         user_query = chat_input.value
         chat_input.value = ""
+        
+        # Check for slash commands
+        preset_prompt = None
+        preset_thinking = None
+        
+        if user_query.startswith('/'):
+            # Handle /help command
+            if user_query.split()[0] in ['/help', '/commands']:
+                help_text = """**Available Commands:**
+
+**`/report`** - Generate executive summary and cohesive report
+**`/synthesize`** - Identify patterns and generate novel insights  
+**`/error-check`** - Find contradictions and inconsistencies
+
+Example: `/report` or `/synthesize focus on financial data`
+
+**Charting:**
+Just ask! Say "plot sales over time" or "chart customer acquisition vs revenue"
+Gemini will automatically generate charts when you ask for visualizations.
+
+Other features:
+- **Thinking dropdown** - Adjust reasoning depth (minimal/low/medium/high)"""
+                
+                chat_list.controls.append(
+                    ft.Container(
+                        content=ft.Markdown(help_text),
+                        bgcolor=ft.Colors.BLUE_GREY_900 if page.theme_mode == ft.ThemeMode.DARK else ft.Colors.BLUE_100,
+                        padding=15,
+                        border_radius=10,
+                        margin=ft.margin.only(bottom=10)
+                    )
+                )
+                page.update()
+                return
+            
+            preset_prompt, preset_thinking = get_preset(user_query.split()[0])
+            
+            if preset_prompt:
+                # Slash command found - set active preset
+                active_preset = user_query.split()[0]
+                
+                # Override thinking level for this query
+                original_thinking = thinking_level
+                thinking_level = preset_thinking
+                
+                # Show preset indicator
+                preset_label = get_preset_indicator(active_preset)
+                if preset_label:
+                    chat_list.controls.append(
+                        ft.Container(
+                            content=ft.Text(preset_label, size=12, weight="bold", color=ft.Colors.BLUE_400),
+                            padding=5,
+                            margin=ft.margin.only(bottom=5)
+                        )
+                    )
+                
+                # Extract actual query after command (if any)
+                parts = user_query.split(maxsplit=1)
+                if len(parts) > 1:
+                    user_query = parts[1]
+                else:
+                    user_query = "Analyze the uploaded files according to the specified mode."
+            else:
+                # Unknown command
+                chat_list.controls.append(
+                    ft.Container(
+                        content=ft.Text(f"Unknown command: {user_query.split()[0]}", 
+                                       color=ft.Colors.RED_400, size=14),
+                        padding=10,
+                        margin=ft.margin.only(bottom=10)
+                    )
+                )
+                page.update()
+                return
         
         # User bubble colors based on theme
         user_bg = ft.Colors.BLUE_GREY_900 if page.theme_mode == ft.ThemeMode.DARK else ft.Colors.BLUE_100
@@ -712,8 +810,12 @@ def main(page: ft.Page):
             # Generate response - use cache if available
             if current_cache_name:
                 # Use cached files
-                from google.genai.types import GenerateContentConfig
-                config = GenerateContentConfig(cached_content=current_cache_name)
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
+                config = GenerateContentConfig(
+                    cached_content=current_cache_name,
+                    thinking_config=ThinkingConfig(thinking_level=thinking_level),
+                    tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
+                )
                 response = client.models.generate_content(
                     model=MODEL_ID,
                     contents=messages,
@@ -731,20 +833,85 @@ def main(page: ft.Page):
                     # Replace last message with files + query
                     messages[-1] = types.Content(role="user", parts=file_parts + [types.Part(text=user_query)])
                 
-                response = client.models.generate_content(model=MODEL_ID, contents=messages)
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
+                config = GenerateContentConfig(
+                    thinking_config=ThinkingConfig(thinking_level=thinking_level),
+                    tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
+                )
+                response = client.models.generate_content(
+                    model=MODEL_ID, 
+                    contents=messages,
+                    config=config
+                )
                 print("No cache - sent files directly")
             
             # Remove thinking indicator
             chat_list.controls.remove(thinking_container)
             
-            # Store ONLY text in conversation history (no files)
-            conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
-            conversation_history.append(types.Content(role="model", parts=[types.Part(text=response.text)]))
+            # Check if response contains function call
+            function_call = None
+            text_response = ""
             
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'function_call') and part.function_call:
+                    function_call = part.function_call
+                elif hasattr(part, 'text') and part.text:
+                    text_response += part.text
+            
+            # Handle chart generation if tool was called
+            if function_call and function_call.name == "generate_chart":
+                try:
+                    # Extract chart parameters
+                    chart_data = dict(function_call.args)
+                    
+                    # Generate chart
+                    status_text.value = "Generating chart..."
+                    page.update()
+                    
+                    chart_path = generate_chart(chart_data)
+                    
+                    # Show chart in dialog
+                    def close_dialog(e):
+                        chart_dialog.open = False
+                        page.update()
+                    
+                    def export_chart(e):
+                        import shutil
+                        export_path = f"./gemdesk_chart_{int(time.time())}.png"
+                        shutil.copy(chart_path, export_path)
+                        status_text.value = f"Chart exported to {export_path}"
+                        page.update()
+                    
+                    chart_dialog = ft.AlertDialog(
+                        title=ft.Text(chart_data.get('title', 'Generated Chart')),
+                        content=ft.Image(src=chart_path, width=800, height=600, fit=ft.ImageFit.CONTAIN),
+                        actions=[
+                            ft.TextButton("Export PNG", on_click=export_chart),
+                            ft.TextButton("Close", on_click=close_dialog)
+                        ]
+                    )
+                    
+                    page.dialog = chart_dialog
+                    chart_dialog.open = True
+                    
+                    # Add a message about chart generation
+                    text_response = f"📊 **Chart Generated: {chart_data.get('title', 'Chart')}**\n\n" + text_response
+                    
+                    status_text.value = "Ready."
+                    
+                except Exception as chart_err:
+                    text_response = f"❌ Chart generation failed: {chart_err}\n\n" + text_response
+                    print(f"Chart generation error: {chart_err}")
+            
+            # Store conversation history
+            conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
+            conversation_history.append(types.Content(role="model", parts=[types.Part(text=text_response)]))
+            
+            # Display response
             chat_list.controls.append(
                 ft.Container(
                     content=ft.Markdown(
-                        response.text, 
+                        text_response, 
                         extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
                         code_theme="atom-one-dark"
                     ),
@@ -755,6 +922,11 @@ def main(page: ft.Page):
                     margin=ft.margin.only(right=50, bottom=10)
                 )
             )
+            
+            # Reset preset after use
+            if preset_prompt:
+                active_preset = None
+                thinking_level = original_thinking  # Restore original thinking level
             
             update_context_meter()
         except Exception as err:
@@ -832,6 +1004,23 @@ def main(page: ft.Page):
             )
         )
 
+    # Thinking level dropdown
+    thinking_dropdown = ft.Dropdown(
+        width=120,
+        height=40,
+        text_size=12,
+        value="high",
+        options=[
+            ft.dropdown.Option("minimal", "Minimal"),
+            ft.dropdown.Option("low", "Low"),
+            ft.dropdown.Option("medium", "Medium"),
+            ft.dropdown.Option("high", "High")
+        ],
+        on_change=change_thinking_level,
+        label="Thinking",
+        tooltip="Thinking depth: minimal (fast) to high (deep reasoning)"
+    )
+    
     # Theme toggle and export buttons
     theme_btn = ft.IconButton(
         icon=ft.icons.LIGHT_MODE,
@@ -910,6 +1099,7 @@ def main(page: ft.Page):
                 ft.Text("SHELF", size=20, weight="bold", color=ft.Colors.WHITE),
                 ft.Row([export_btn, theme_btn], spacing=0)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            thinking_dropdown,
             ft.Text(f"Max {MAX_FILES} files", size=10, color=ft.Colors.GREY_500),
             ft.Divider(color=ft.Colors.GREY_800),
             upload_btn,

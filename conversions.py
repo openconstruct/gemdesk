@@ -47,6 +47,101 @@ def convert_ods_to_csv(ods_path):
         raise Exception("pandas and odfpy required. Install: pip install pandas odfpy")
 
 
+def convert_docx_to_pdf(docx_path):
+    """Convert DOCX to PDF using python-docx and reportlab"""
+    try:
+        from docx import Document
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+        from reportlab.lib.units import inch
+        from PIL import Image
+        import io
+        
+        doc = Document(docx_path)
+        temp_pdf = tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False)
+        pdf_doc = SimpleDocTemplate(temp_pdf.name, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        temp_image_files = []  # Track temp files for cleanup
+        
+        # Process paragraphs and images
+        for para in doc.paragraphs:
+            if para.text.strip():
+                # Detect style
+                style = styles['Normal']
+                if para.style.name.startswith('Heading'):
+                    level = para.style.name.replace('Heading ', '')
+                    if level == '1':
+                        style = styles['Heading1']
+                    elif level == '2':
+                        style = styles['Heading2']
+                    else:
+                        style = styles['Heading3']
+                
+                # Clean text
+                text = para.text.replace('\x00', '')
+                p = Paragraph(text, style)
+                story.append(p)
+                story.append(Spacer(1, 0.1*inch))
+        
+        # Extract and add inline images
+        for rel in doc.part.rels.values():
+            if "image" in rel.target_ref:
+                try:
+                    image_data = rel.target_part.blob
+                    image_stream = io.BytesIO(image_data)
+                    img = Image.open(image_stream)
+                    
+                    # Resize if too large (max width 6 inches)
+                    max_width = 6 * inch
+                    aspect = img.height / img.width
+                    if img.width > max_width:
+                        img_width = max_width
+                        img_height = max_width * aspect
+                    else:
+                        img_width = img.width
+                        img_height = img.height
+                    
+                    # Save to temp file for reportlab
+                    temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                    img.save(temp_img.name, 'PNG')
+                    temp_img.close()
+                    temp_image_files.append(temp_img.name)
+                    
+                    # Add to PDF
+                    rl_img = RLImage(temp_img.name, width=img_width, height=img_height)
+                    story.append(rl_img)
+                    story.append(Spacer(1, 0.2*inch))
+                except Exception as e:
+                    print(f"Image extraction error: {e}")
+                    continue
+        
+        # Process tables
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = ' | '.join(cell.text for cell in row.cells)
+                if row_text.strip():
+                    p = Paragraph(row_text, styles['Normal'])
+                    story.append(p)
+            story.append(Spacer(1, 0.2*inch))
+        
+        # Build PDF (this reads the temp images)
+        pdf_doc.build(story)
+        temp_pdf.close()
+        
+        # NOW clean up temp images after PDF is built
+        for temp_img_path in temp_image_files:
+            try:
+                os.unlink(temp_img_path)
+            except:
+                pass
+        
+        return temp_pdf.name
+    except ImportError:
+        raise Exception("python-docx and reportlab required. Install: pip install python-docx reportlab")
+
+
 def convert_pptx_to_text(pptx_path):
     """Convert PowerPoint to text"""
     try:
@@ -118,19 +213,43 @@ def download_file_from_url(url):
         
         # Get file extension from URL or content-type
         import mimetypes
-        content_type = response.headers.get('content-type', '')
+        from urllib.parse import urlparse
+        
+        # Get content-type from response
+        content_type = response.headers.get('content-type', '').split(';')[0].strip()
+        print(f"DEBUG download_file_from_url: Content-Type from server: {content_type}")
         
         # Try to get extension from URL first
-        from urllib.parse import urlparse
         path = urlparse(url).path
-        ext = path[path.rfind('.'):] if '.' in path.split('/')[-1] else ''
+        filename = path.split('/')[-1] if path else ''
         
-        # If no extension in URL, try to guess from content-type
+        # Only treat as extension if it's a known file type (not version numbers like .v1)
+        valid_extensions = {'.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', 
+                           '.avi', '.mp3', '.wav', '.doc', '.docx', '.txt', '.zip'}
+        ext = ''
+        if '.' in filename:
+            potential_ext = filename[filename.rfind('.'):].lower()
+            if potential_ext in valid_extensions:
+                ext = potential_ext
+        
+        print(f"DEBUG download_file_from_url: Extension from URL: {ext}")
+        
+        # If no extension in URL, determine from content-type
         if not ext:
-            ext = mimetypes.guess_extension(content_type.split(';')[0]) or '.bin'
+            # Map content-type to extension
+            if content_type == 'application/pdf':
+                ext = '.pdf'
+            elif content_type.startswith('image/'):
+                ext = mimetypes.guess_extension(content_type) or '.jpg'
+            elif content_type.startswith('video/'):
+                ext = mimetypes.guess_extension(content_type) or '.mp4'
+            else:
+                ext = mimetypes.guess_extension(content_type) or '.bin'
+            print(f"DEBUG download_file_from_url: Determined extension: {ext}")
         
-        # Download to temp file
+        # Download to temp file with correct extension
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+        print(f"DEBUG download_file_from_url: Temp file will be: {temp_file.name}")
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 temp_file.write(chunk)
