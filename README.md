@@ -303,6 +303,6 @@ MIT License - See [LICENSE](LICENSE) for details
 
 ---
 
-**Built for the Gemini API Developer Competition 2025**
+**Built for the Gemini 3 Hackathon 2026**
 
 *Showcasing advanced multimodal analysis with intelligent context management and adaptive reasoning*
