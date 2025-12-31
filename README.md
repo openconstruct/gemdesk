@@ -50,7 +50,7 @@ GemDesk is a desktop application that enables deep analysis across multiple file
 
 #### 1. Clone the repository
 ```bash
-git clone https://github.com/yourusername/gemdesk.git
+git clone https://github.com/openconstruct/gemdesk.git
 cd gemdesk
 ```
 
@@ -230,7 +230,7 @@ Contributions welcome! Areas for improvement:
 ### Development Setup
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/gemdesk.git
+git clone https://github.com/openconstruct/gemdesk.git
 cd gemdesk
 
 # Install dev dependencies
@@ -287,7 +287,7 @@ MIT License - See [LICENSE](LICENSE) for details
 
 - [Gemini API Documentation](https://ai.google.dev/)
 - [Flet Documentation](https://flet.dev/)
-- [Report Issues](https://github.com/yourusername/gemdesk/issues)
+- [Report Issues](https://github.com/openconstruct/gemdesk/issues)
 
 ---
 
