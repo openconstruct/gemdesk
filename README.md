@@ -4,7 +4,8 @@
 
 GemDesk is a desktop application that enables deep analysis across multiple files simultaneously using Google's Gemini 3 Flash model. Upload up to 50 files, ask questions, generate reports, find contradictions, and visualize data - all with intelligent context caching and adaptive thinking modes.
 
-![GemDesk Interface](https://via.placeholder.com/800x500?text=GemDesk+Screenshot)
+<img width="1024" height="1024" alt="GemDesk logo" src="https://github.com/user-attachments/assets/904b4137-18cc-4f7a-a99e-829616844425" />
+
 
 ## ✨ Key Features
 
