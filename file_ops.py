@@ -9,8 +9,12 @@ import mimetypes
 from google.genai import types
 from conversions import (
     convert_docx_to_pdf, convert_xlsx_to_csv, convert_ods_to_csv,
-    convert_odp_to_text, convert_odt_to_text, download_file_from_url,
-    is_direct_file_url, scrape_url, generate_thumbnail
+    convert_odp_to_text, convert_odt_to_text, convert_pptx_to_pdf,
+    download_file_from_url, is_direct_file_url, scrape_url, generate_thumbnail
+)
+from validation import (
+    validate_file_size, validate_file_extension, validate_url,
+    sanitize_filename, ValidationError
 )
 
 
@@ -26,6 +30,9 @@ def get_mime_type(filename):
         '.pdf': 'application/pdf',
         '.txt': 'text/plain',
         '.md': 'text/markdown',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
         '.rtf': 'application/rtf',
         '.html': 'text/html',
         '.htm': 'text/html',
@@ -85,6 +92,16 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
     
     Returns: dict with file info or raises exception
     """
+    # Sanitize filename
+    file_name = sanitize_filename(file_name)
+    
+    # Validate file
+    try:
+        validate_file_size(file_path)
+        validate_file_extension(file_name)
+    except ValidationError as e:
+        raise Exception(f"File validation failed: {e}")
+    
     file_to_upload = file_path
     original_name = file_name
     
@@ -93,6 +110,11 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
         status_text.value = f"Converting {file_name} to PDF..."
         page.update()
         file_to_upload = convert_docx_to_pdf(file_path)
+        mime_type = 'application/pdf'
+    elif file_name.lower().endswith('.pptx'):
+        status_text.value = f"Converting {file_name} to PDF..."
+        page.update()
+        file_to_upload = convert_pptx_to_pdf(file_path)
         mime_type = 'application/pdf'
     elif file_name.lower().endswith('.xlsx'):
         status_text.value = f"Converting {file_name}..."
@@ -121,10 +143,6 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
     with open(file_to_upload, 'rb') as file_handle:
         file_ref = client.files.upload(file=file_handle, config={'mime_type': mime_type})
     
-    # Clean up converted file
-    if file_to_upload != file_path:
-        os.unlink(file_to_upload)
-    
     # Wait for processing
     while file_ref.state.name == "PROCESSING":
         status_text.value = f"Processing {file_name}..."
@@ -146,12 +164,19 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
         ])]
     )
     
+    # Generate thumbnail before cleanup
+    thumbnail = generate_thumbnail(file_to_upload, mime_type)
+    
+    # Clean up converted file
+    if file_to_upload != file_path:
+        os.unlink(file_to_upload)
+    
     return {
         "name": original_name,
         "uri": file_ref.uri,
         "mime": file_ref.mime_type,
         "tokens": file_token_count.total_tokens,
-        "thumbnail": generate_thumbnail(file_path, mime_type)
+        "thumbnail": thumbnail
     }
 
 
@@ -205,6 +230,19 @@ def handle_url_add(url_input, uploaded_files, max_files, client, model_id,
     """Handle URL input and download/scrape"""
     url = url_input.value.strip()
     if not url:
+        return
+    
+    # Validate URL
+    try:
+        url = validate_url(url)
+    except ValidationError as err:
+        status_text.value = f"Invalid URL: {err}"
+        status_text.color = ft.Colors.RED
+        page.update()
+        time.sleep(2)
+        status_text.color = ft.Colors.GREY_500
+        status_text.value = "Ready"
+        page.update()
         return
     
     url_input.value = ""

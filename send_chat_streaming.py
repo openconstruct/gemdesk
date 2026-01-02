@@ -2,8 +2,6 @@
 # Replace the existing send_chat function with this
 
 def send_chat(e):
-    nonlocal active_preset, thinking_level
-    
     if not chat_input.value:
         return
     
@@ -48,14 +46,14 @@ Other features:
         
         if preset_prompt:
             # Slash command found - set active preset
-            active_preset = user_query.split()[0]
+            state.active_preset = user_query.split()[0]
             
             # Override thinking level for this query
-            original_thinking = thinking_level
-            thinking_level = preset_thinking
+            original_thinking = state.thinking_level
+            state.thinking_level = preset_thinking
             
             # Show preset indicator
-            preset_label = get_preset_indicator(active_preset)
+            preset_label = get_preset_indicator(state.active_preset)
             if preset_label:
                 chat_list.controls.append(
                     ft.Container(
@@ -121,126 +119,139 @@ Other features:
     chat_list.controls.append(response_container)
     page.update()
 
-    try:
-        # Build messages
-        messages = []
-        
-        # System prompt (use preset if active, otherwise default)
-        if preset_prompt:
-            messages.append(types.Content(role="user", parts=[types.Part(text=preset_prompt)]))
-            messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will analyze according to the specified mode.")]))
-        else:
-            messages.append(types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]))
-            messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")]))
-        
-        # Conversational context (text only)
-        messages.extend(conversation_history)
-        
-        # Add current query
-        messages.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
-
-        # Generate response with streaming
-        if current_cache_name:
-            from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
-            config = GenerateContentConfig(
-                cached_content=current_cache_name,
-                thinking_config=ThinkingConfig(thinking_level=thinking_level),
-                tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
-            )
-            stream = client.models.generate_content_stream(
-                model=MODEL_ID,
-                contents=messages,
-                config=config
-            )
-        else:
-            # No cache - send files directly
-            if uploaded_files:
-                file_parts = [
-                    types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"])
-                    for f in uploaded_files
-                ]
-                messages[-1] = types.Content(role="user", parts=file_parts + [types.Part(text=user_query)])
+    # Run API call in thread to avoid blocking UI
+    def process_response():
+        try:
+            # Build messages
+            messages = []
             
-            from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool
-            config = GenerateContentConfig(
-                thinking_config=ThinkingConfig(thinking_level=thinking_level),
-                tools=[Tool(function_declarations=[get_chart_tool_declaration()])]
-            )
-            stream = client.models.generate_content_stream(
-                model=MODEL_ID,
-                contents=messages,
-                config=config
-            )
-        
-        # Stream response
-        full_text = ""
-        function_call = None
-        
-        for chunk in stream:
-            # Check for function calls
-            for part in chunk.candidates[0].content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    function_call = part.function_call
-                elif hasattr(part, 'text') and part.text:
-                    full_text += part.text
-                    response_text.value = full_text
-                    page.update()
-        
-        # Handle chart generation if tool was called
-        if function_call and function_call.name == "generate_chart":
-            try:
-                response_text.value = full_text + "\n\n⏳ Generating chart..."
-                page.update()
+            # System prompt (use preset if active, otherwise default)
+            if preset_prompt:
+                messages.append(types.Content(role="user", parts=[types.Part(text=preset_prompt)]))
+                messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will analyze according to the specified mode.")]))
+            else:
+                messages.append(types.Content(role="user", parts=[types.Part(text=SYSTEM_PROMPT)]))
+                messages.append(types.Content(role="model", parts=[types.Part(text="Understood. I will provide expert analysis with specific references to page numbers, timestamps (in MM:SS format with seconds), and data locations as appropriate.")]))
+            
+            # Conversational context (text only)
+            messages.extend(state.conversation_history)
+            
+            # Add current query
+            messages.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
+
+            # Generate response with streaming
+            if state.current_cache_name:
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool, GoogleSearch
+                tools = [Tool(function_declarations=[get_chart_tool_declaration()])]
+                if state.google_search_enabled:
+                    tools.append(Tool(google_search=GoogleSearch()))
                 
-                chart_data = dict(function_call.args)
-                chart_path = generate_chart(chart_data)
-                
-                # Show chart in dialog
-                def close_dialog(e):
-                    chart_dialog.open = False
-                    page.update()
-                
-                def export_chart(e):
-                    import shutil
-                    export_path = f"./gemdesk_chart_{int(time.time())}.png"
-                    shutil.copy(chart_path, export_path)
-                    status_text.value = f"Chart exported to {export_path}"
-                    page.update()
-                
-                chart_dialog = ft.AlertDialog(
-                    title=ft.Text(chart_data.get('title', 'Generated Chart')),
-                    content=ft.Image(src=chart_path, width=800, height=600, fit=ft.ImageFit.CONTAIN),
-                    actions=[
-                        ft.TextButton("Export PNG", on_click=export_chart),
-                        ft.TextButton("Close", on_click=close_dialog)
-                    ]
+                config = GenerateContentConfig(
+                    cached_content=state.current_cache_name,
+                    thinking_config=ThinkingConfig(thinking_level=state.thinking_level),
+                    tools=tools
                 )
+                stream = client.models.generate_content_stream(
+                    model=MODEL_ID,
+                    contents=messages,
+                    config=config
+                )
+            else:
+                # No cache - send files directly
+                if state.uploaded_files:
+                    file_parts = [
+                        types.Part.from_uri(file_uri=f["uri"], mime_type=f["mime"])
+                        for f in state.uploaded_files
+                    ]
+                    messages[-1] = types.Content(role="user", parts=file_parts + [types.Part(text=user_query)])
                 
-                page.dialog = chart_dialog
-                chart_dialog.open = True
+                from google.genai.types import GenerateContentConfig, ThinkingConfig, Tool, GoogleSearch
+                tools = [Tool(function_declarations=[get_chart_tool_declaration()])]
+                if state.google_search_enabled:
+                    tools.append(Tool(google_search=GoogleSearch()))
                 
-                full_text = f"📊 **Chart Generated: {chart_data.get('title', 'Chart')}**\n\n" + full_text
-                response_text.value = full_text
-                
-            except Exception as chart_err:
-                full_text = f"❌ Chart generation failed: {chart_err}\n\n" + full_text
-                response_text.value = full_text
-                print(f"Chart generation error: {chart_err}")
-        
-        page.update()
-        
-        # Store conversation history
-        conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
-        conversation_history.append(types.Content(role="model", parts=[types.Part(text=full_text)]))
-        
-        # Reset preset after use
-        if preset_prompt:
-            active_preset = None
-            thinking_level = original_thinking
-        
-        update_context_meter()
-        
-    except Exception as err:
-        response_text.value = f"❌ Error: {err}"
-        print(f"Chat error: {err}")
-        page.update()
+                config = GenerateContentConfig(
+                    thinking_config=ThinkingConfig(thinking_level=state.thinking_level),
+                    tools=tools
+                )
+                stream = client.models.generate_content_stream(
+                    model=MODEL_ID,
+                    contents=messages,
+                    config=config
+                )
+            
+            # Stream response
+            full_text = ""
+            function_call = None
+            
+            for chunk in stream:
+                # Check for function calls
+                for part in chunk.candidates[0].content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        function_call = part.function_call
+                    elif hasattr(part, 'text') and part.text:
+                        full_text += part.text
+                        response_text.value = full_text
+                        page.update()
+            
+            # Handle chart generation if tool was called
+            if function_call and function_call.name == "generate_chart":
+                try:
+                    response_text.value = full_text + "\n\n⏳ Generating chart..."
+                    page.update()
+                    
+                    chart_data = dict(function_call.args)
+                    chart_path = generate_chart(chart_data)
+                    
+                    # Show chart in dialog
+                    def close_dialog(e):
+                        chart_dialog.open = False
+                        page.update()
+                    
+                    def export_chart(e):
+                        import shutil
+                        export_path = f"./gemdesk_chart_{int(time.time())}.png"
+                        shutil.copy(chart_path, export_path)
+                        status_text.value = f"Chart exported to {export_path}"
+                        page.update()
+                    
+                    chart_dialog = ft.AlertDialog(
+                        title=ft.Text(chart_data.get('title', 'Generated Chart')),
+                        content=ft.Image(src=chart_path, width=800, height=600, fit=ft.ImageFit.CONTAIN),
+                        actions=[
+                            ft.TextButton("Export PNG", on_click=export_chart),
+                            ft.TextButton("Close", on_click=close_dialog)
+                        ]
+                    )
+                    
+                    page.dialog = chart_dialog
+                    chart_dialog.open = True
+                    
+                    full_text = f"📊 **Chart Generated: {chart_data.get('title', 'Chart')}**\n\n" + full_text
+                    response_text.value = full_text
+                    
+                except Exception as chart_err:
+                    full_text = f"❌ Chart generation failed: {chart_err}\n\n" + full_text
+                    response_text.value = full_text
+                    print(f"Chart generation error: {chart_err}")
+            
+            page.update()
+            
+            # Store conversation history
+            state.conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
+            state.conversation_history.append(types.Content(role="model", parts=[types.Part(text=full_text)]))
+            
+            # Reset preset after use
+            if preset_prompt:
+                state.active_preset = None
+                state.thinking_level = original_thinking
+            
+            update_context_meter()
+            
+        except Exception as err:
+            response_text.value = f"❌ Error: {err}"
+            print(f"Chat error: {err}")
+            page.update()
+    
+    # Start thread
+    threading.Thread(target=process_response, daemon=True).start()

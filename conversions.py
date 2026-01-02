@@ -142,24 +142,152 @@ def convert_docx_to_pdf(docx_path):
         raise Exception("python-docx and reportlab required. Install: pip install python-docx reportlab")
 
 
-def convert_pptx_to_text(pptx_path):
-    """Convert PowerPoint to text"""
+def convert_pptx_to_pdf(pptx_path):
+    """Convert PowerPoint to PDF preserving images and charts"""
     try:
         from pptx import Presentation
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.lib.enums import TA_CENTER
+        from PIL import Image
+        import io
+        
         prs = Presentation(pptx_path)
-        text_content = ""
-        for i, slide in enumerate(prs.slides, 1):
-            text_content += f"=== SLIDE {i} ===\n"
+        temp_pdf = tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False)
+        pdf_doc = SimpleDocTemplate(temp_pdf.name, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        temp_image_files = []  # Track temp files for cleanup AFTER PDF build
+        
+        # Create centered style for slide titles
+        title_style = ParagraphStyle(
+            'SlideTitle',
+            parent=styles['Heading1'],
+            alignment=TA_CENTER,
+            spaceAfter=12
+        )
+        
+        for slide_num, slide in enumerate(prs.slides, 1):
+            # Slide number header
+            story.append(Paragraph(f"<b>Slide {slide_num}</b>", title_style))
+            story.append(Spacer(1, 0.2*inch))
+            
+            # Extract text and images from shapes
             for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    text_content += shape.text + "\n"
-            text_content += "\n"
-        temp_txt = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
-        temp_txt.write(text_content)
-        temp_txt.close()
-        return temp_txt.name
+                # Handle text
+                if hasattr(shape, "text") and shape.text.strip():
+                    text = shape.text.replace('\x00', '')
+                    story.append(Paragraph(text, styles['Normal']))
+                    story.append(Spacer(1, 0.1*inch))
+                
+                # Handle all image types (pictures, shapes with fills, etc.)
+                try:
+                    # Method 1: Direct picture shapes (shape_type 13)
+                    if hasattr(shape, 'image'):
+                        image_bytes = shape.image.blob
+                        image_stream = io.BytesIO(image_bytes)
+                        img = Image.open(image_stream)
+                        
+                        # Resize if too large (max width 6 inches)
+                        max_width = 6 * inch
+                        aspect = img.height / img.width
+                        if img.width > max_width:
+                            img_width = max_width
+                            img_height = max_width * aspect
+                        else:
+                            img_width = img.width * 0.75
+                            img_height = img.height * 0.75
+                        
+                        # Save to temp file
+                        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                        img.save(temp_img.name, 'PNG')
+                        temp_img.close()
+                        temp_image_files.append(temp_img.name)
+                        
+                        # Add to PDF
+                        rl_img = RLImage(temp_img.name, width=img_width, height=img_height)
+                        story.append(rl_img)
+                        story.append(Spacer(1, 0.2*inch))
+                        continue
+                except Exception as e:
+                    pass  # Try next method
+                
+                # Method 2: Charts (rendered as images)
+                try:
+                    if hasattr(shape, 'chart'):
+                        # Export chart by rendering the shape
+                        # Charts in python-pptx are complex - try to get the image representation
+                        chart_img_bytes = shape.chart.part.blob
+                        image_stream = io.BytesIO(chart_img_bytes)
+                        img = Image.open(image_stream)
+                        
+                        max_width = 6 * inch
+                        aspect = img.height / img.width
+                        img_width = max_width
+                        img_height = max_width * aspect
+                        
+                        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                        img.save(temp_img.name, 'PNG')
+                        temp_img.close()
+                        temp_image_files.append(temp_img.name)
+                        
+                        rl_img = RLImage(temp_img.name, width=img_width, height=img_height)
+                        story.append(rl_img)
+                        story.append(Spacer(1, 0.2*inch))
+                        continue
+                except Exception as e:
+                    pass  # Try next method
+                
+                # Method 3: Group shapes (diagrams, SmartArt, etc.)
+                try:
+                    if hasattr(shape, 'shapes'):  # It's a group shape
+                        # Recursively extract images from grouped shapes
+                        for subshape in shape.shapes:
+                            if hasattr(subshape, 'image'):
+                                image_bytes = subshape.image.blob
+                                image_stream = io.BytesIO(image_bytes)
+                                img = Image.open(image_stream)
+                                
+                                max_width = 6 * inch
+                                aspect = img.height / img.width
+                                if img.width > max_width:
+                                    img_width = max_width
+                                    img_height = max_width * aspect
+                                else:
+                                    img_width = img.width * 0.75
+                                    img_height = img.height * 0.75
+                                
+                                temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                                img.save(temp_img.name, 'PNG')
+                                temp_img.close()
+                                temp_image_files.append(temp_img.name)
+                                
+                                rl_img = RLImage(temp_img.name, width=img_width, height=img_height)
+                                story.append(rl_img)
+                                story.append(Spacer(1, 0.2*inch))
+                except Exception as e:
+                    pass  # Continue to next shape
+            
+            # Page break between slides
+            if slide_num < len(prs.slides):
+                story.append(PageBreak())
+        
+        # Build PDF (this reads the temp images)
+        pdf_doc.build(story)
+        temp_pdf.close()
+        
+        # NOW clean up temp images after PDF is built
+        for temp_img_path in temp_image_files:
+            try:
+                os.unlink(temp_img_path)
+            except:
+                pass
+        
+        return temp_pdf.name
     except ImportError:
-        raise Exception("python-pptx required. Install: pip install python-pptx")
+        raise Exception("python-pptx and reportlab required. Install: pip install python-pptx reportlab")
 
 
 def convert_odp_to_text(odp_path):
@@ -225,7 +353,7 @@ def download_file_from_url(url):
         
         # Only treat as extension if it's a known file type (not version numbers like .v1)
         valid_extensions = {'.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', 
-                           '.avi', '.mp3', '.wav', '.doc', '.docx', '.txt', '.zip'}
+                           '.avi', '.mp3', '.wav', '.doc', '.docx', '.xlsx', '.pptx', '.csv', '.txt', '.zip'}
         ext = ''
         if '.' in filename:
             potential_ext = filename[filename.rfind('.'):].lower()

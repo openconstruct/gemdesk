@@ -12,13 +12,13 @@ def get_preset(command):
     """
     command = command.lower().strip()
     
-    if command in ['/report', '/summarize', '/digest']:
+    if command in ['/report']:
         return (REPORT_PROMPT, "medium")
     
-    elif command in ['/synthesize', '/theory', '/insights']:
+    elif command in ['/synthesize']:
         return (SYNTHESIZE_PROMPT, "high")
     
-    elif command in ['/error-check', '/contradictions', '/verify']:
+    elif command in ['/error-check']:
         return (ERROR_CHECK_PROMPT, "high")
     
     return (None, None)
@@ -127,11 +127,11 @@ def get_preset_indicator(command):
     """Get a short label for UI display"""
     command = command.lower().strip()
     
-    if command in ['/report', '/summarize', '/digest']:
+    if command in ['/report']:
         return "📋 REPORT MODE"
-    elif command in ['/synthesize', '/theory', '/insights']:
+    elif command in ['/synthesize']:
         return "🔬 SYNTHESIS MODE"
-    elif command in ['/error-check', '/contradictions', '/verify']:
+    elif command in ['/error-check']:
         return "🔍 ERROR-CHECK MODE"
     
     return None

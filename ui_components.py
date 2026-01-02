@@ -5,6 +5,12 @@ Handles shelf organization and file display
 
 import flet as ft
 
+# Flet version compatibility
+if not hasattr(ft, 'Colors'):
+    ft.Colors = ft.colors
+if not hasattr(ft, 'Icons'):
+    ft.Icons = ft.icons
+
 
 def get_file_category(name, mime):
     """Categorize file for folder organization"""

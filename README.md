@@ -4,8 +4,7 @@
 
 GemDesk is a desktop application that enables deep analysis across multiple files simultaneously using Google's Gemini 3 Flash model. Upload up to 50 files, ask questions, generate reports, find contradictions, and visualize data - all with intelligent context caching and adaptive thinking modes.
 
-<img width="1024" height="1024" alt="GemDesk logo" src="https://github.com/user-attachments/assets/904b4137-18cc-4f7a-a99e-829616844425" />
-
+![GemDesk Interface](https://via.placeholder.com/800x500?text=GemDesk+Screenshot)
 
 ## ✨ Key Features
 
@@ -50,7 +49,7 @@ GemDesk is a desktop application that enables deep analysis across multiple file
 
 #### 1. Clone the repository
 ```bash
-git clone https://github.com/openconstruct/gemdesk.git
+git clone https://github.com/yourusername/gemdesk.git
 cd gemdesk
 ```
 
@@ -230,7 +229,7 @@ Contributions welcome! Areas for improvement:
 ### Development Setup
 ```bash
 # Clone repository
-git clone https://github.com/openconstruct/gemdesk.git
+git clone https://github.com/yourusername/gemdesk.git
 cd gemdesk
 
 # Install dev dependencies
@@ -287,7 +286,7 @@ MIT License - See [LICENSE](LICENSE) for details
 
 - [Gemini API Documentation](https://ai.google.dev/)
 - [Flet Documentation](https://flet.dev/)
-- [Report Issues](https://github.com/openconstruct/gemdesk/issues)
+- [Report Issues](https://github.com/yourusername/gemdesk/issues)
 
 ---
 
@@ -303,6 +302,6 @@ MIT License - See [LICENSE](LICENSE) for details
 
 ---
 
-**Built for the Gemini 3 Hackathon 2026**
+**Built for the Gemini API Developer Competition 2025**
 
 *Showcasing advanced multimodal analysis with intelligent context management and adaptive reasoning*

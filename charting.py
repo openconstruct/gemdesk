@@ -11,30 +11,11 @@ import tempfile
 import os
 
 
-def parse_chart_json(json_str):
-    """Parse chart data from Gemini JSON response"""
-    try:
-        # Try to find JSON in the response (might have markdown code blocks)
-        if '```json' in json_str:
-            start = json_str.find('```json') + 7
-            end = json_str.find('```', start)
-            json_str = json_str[start:end].strip()
-        elif '```' in json_str:
-            start = json_str.find('```') + 3
-            end = json_str.find('```', start)
-            json_str = json_str[start:end].strip()
-        
-        data = json.loads(json_str)
-        return data
-    except Exception as e:
-        raise Exception(f"Failed to parse chart JSON: {e}")
-
-
 def generate_chart(chart_data):
     """
-    Generate chart from data dictionary
+    Generate chart from data dictionary via Gemini Function Calling
     
-    Expected format:
+    Expected format from function_call.args:
     {
         "chart_type": "line|bar|pie|scatter",
         "title": "Chart Title",
@@ -201,6 +182,16 @@ def get_chart_tool_declaration():
                                     "values": {
                                         "type": "array",
                                         "items": {"type": "number"}
+                                    },
+                                    "x": {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "description": "X coordinates for this series (scatter/line)"
+                                    },
+                                    "y": {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                        "description": "Y coordinates for this series (scatter/line)"
                                     }
                                 }
                             }
