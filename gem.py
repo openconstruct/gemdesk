@@ -1,12 +1,7 @@
 import flet as ft
 import os
-import sys
 import time
-import mimetypes
-import tempfile
-import requests
 import threading
-from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -49,9 +44,44 @@ try:
 except ValidationError as e:
     raise Exception(f"Invalid API key: {e}")
 
-MODEL_ID = "gemini-3-flash-preview"
+MODEL_ID = "gemini-2.0-flash-exp"  # Default model
 MAX_CONTEXT_TOKENS = 1000000
 MAX_FILES = 50
+
+# Query available models from API
+try:
+    available_models_list = client.models.list()
+    AVAILABLE_MODELS = {}
+    for model in available_models_list:
+        # Only include generative models that support generateContent
+        if 'generateContent' in model.supported_generation_methods:
+            # Extract context window from model info
+            context_window = getattr(model, 'input_token_limit', 1000000)
+            AVAILABLE_MODELS[model.name] = {
+                "name": model.display_name or model.name,
+                "context": context_window
+            }
+    
+    # If no models found or default not available, use fallback
+    if not AVAILABLE_MODELS:
+        AVAILABLE_MODELS = {
+            "gemini-2.0-flash-exp": {"name": "Gemini 2.0 Flash", "context": 1000000},
+            "gemini-3-flash-preview": {"name": "Gemini 3 Flash Preview", "context": 1000000},
+            "gemini-3-pro-preview": {"name": "Gemini 3 Pro Preview", "context": 2000000},
+        }
+    
+    # Use first available model as default if specified default doesn't exist
+    if MODEL_ID not in AVAILABLE_MODELS:
+        MODEL_ID = list(AVAILABLE_MODELS.keys())[0]
+        
+except Exception as e:
+    print(f"Could not fetch models from API: {e}")
+    # Fallback to hardcoded models
+    AVAILABLE_MODELS = {
+        "gemini-2.0-flash-exp": {"name": "Gemini 2.0 Flash", "context": 1000000},
+        "gemini-3-flash-preview": {"name": "Gemini 3 Flash Preview", "context": 1000000},
+        "gemini-3-pro-preview": {"name": "Gemini 3 Pro Preview", "context": 2000000},
+    }
 
 SYSTEM_PROMPT = """You are an expert analyst assistant running on Gemini 3 Flash with advanced multimodal capabilities.
 
@@ -108,61 +138,72 @@ def main(page: ft.Page):
             from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
             from reportlab.lib.units import inch
             from datetime import datetime
-            from pathlib import Path
             
-            # Save to Downloads folder with timestamp
-            downloads_dir = Path.home() / "Downloads"
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_path = downloads_dir / f"gemdesk_{timestamp}.pdf"
-            
-            doc = SimpleDocTemplate(str(output_path), pagesize=letter)
-            styles = getSampleStyleSheet()
-            story = []
-            
-            # Title
-            title = Paragraph(f"<b>GemDesk Chat Export</b>", styles['Title'])
-            story.append(title)
-            story.append(Spacer(1, 0.2*inch))
-            
-            # Metadata
-            meta = Paragraph(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal'])
-            story.append(meta)
-            story.append(Spacer(1, 0.1*inch))
-            
-            # Files
-            if state.uploaded_files:
-                files_title = Paragraph("<b>Files in Context:</b>", styles['Heading2'])
-                story.append(files_title)
-                for f in state.uploaded_files:
-                    file_line = Paragraph(f"• {f['name']} ({f['tokens']:,} tokens)", styles['Normal'])
-                    story.append(file_line)
-                story.append(Spacer(1, 0.3*inch))
-            
-            # Conversation
-            conv_title = Paragraph("<b>Conversation:</b>", styles['Heading2'])
-            story.append(conv_title)
-            story.append(Spacer(1, 0.2*inch))
-            
-            for msg in state.conversation_history:
-                if msg.role == "user":
-                    text_parts = [p.text for p in msg.parts if hasattr(p, 'text') and p.text]
-                    if text_parts:
-                        user_msg = Paragraph(f"<b>You:</b> {text_parts[0]}", styles['Normal'])
-                        story.append(user_msg)
-                        story.append(Spacer(1, 0.1*inch))
-                elif msg.role == "model":
-                    text_parts = [p.text for p in msg.parts if hasattr(p, 'text')]
-                    if text_parts:
-                        # Clean markdown for PDF
-                        clean_text = text_parts[0].replace('**', '').replace('*', '').replace('#', '')
-                        ai_msg = Paragraph(f"<b>Assistant:</b> {clean_text}", styles['Normal'])
-                        story.append(ai_msg)
+            # Create save file picker
+            def save_dialog_result(e: ft.FilePickerResultEvent):
+                if e.path:
+                    try:
+                        doc = SimpleDocTemplate(e.path, pagesize=letter)
+                        styles = getSampleStyleSheet()
+                        story = []
+                        
+                        # Title
+                        title = Paragraph(f"<b>GemDesk Chat Export</b>", styles['Title'])
+                        story.append(title)
                         story.append(Spacer(1, 0.2*inch))
+                        
+                        # Metadata
+                        meta = Paragraph(f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal'])
+                        story.append(meta)
+                        story.append(Spacer(1, 0.1*inch))
+                        
+                        # Files
+                        if state.uploaded_files:
+                            files_title = Paragraph("<b>Files in Context:</b>", styles['Heading2'])
+                            story.append(files_title)
+                            for f in state.uploaded_files:
+                                file_line = Paragraph(f"• {f['name']} ({f['tokens']:,} tokens)", styles['Normal'])
+                                story.append(file_line)
+                            story.append(Spacer(1, 0.3*inch))
+                        
+                        # Conversation
+                        conv_title = Paragraph("<b>Conversation:</b>", styles['Heading2'])
+                        story.append(conv_title)
+                        story.append(Spacer(1, 0.2*inch))
+                        
+                        for msg in state.conversation_history:
+                            if msg.role == "user":
+                                text_parts = [p.text for p in msg.parts if hasattr(p, 'text') and p.text]
+                                if text_parts:
+                                    user_msg = Paragraph(f"<b>You:</b> {text_parts[0]}", styles['Normal'])
+                                    story.append(user_msg)
+                                    story.append(Spacer(1, 0.1*inch))
+                            elif msg.role == "model":
+                                text_parts = [p.text for p in msg.parts if hasattr(p, 'text')]
+                                if text_parts:
+                                    # Clean markdown for PDF
+                                    clean_text = text_parts[0].replace('**', '').replace('*', '').replace('#', '')
+                                    ai_msg = Paragraph(f"<b>Assistant:</b> {clean_text}", styles['Normal'])
+                                    story.append(ai_msg)
+                                    story.append(Spacer(1, 0.2*inch))
+                        
+                        doc.build(story)
+                        status_text.value = f"Saved to {e.path}"
+                        page.update()
+                    except Exception as err:
+                        status_text.value = f"Export error: {str(err)[:50]}"
+                        page.update()
             
-            doc.build(story)
-            
-            status_text.value = f"Saved to Downloads/gemdesk_{timestamp}.pdf"
+            save_picker = ft.FilePicker(on_result=save_dialog_result)
+            page.overlay.append(save_picker)
             page.update()
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            save_picker.save_file(
+                file_name=f"gemdesk_{timestamp}.pdf",
+                allowed_extensions=["pdf"],
+                dialog_title="Save Chat Export"
+            )
             
         except ImportError:
             status_text.value = "Error: Install reportlab (pip install reportlab)"
@@ -216,6 +257,14 @@ def main(page: ft.Page):
             status_text.value = f"Thinking: {state.thinking_level}"
         except ValidationError as err:
             status_text.value = f"Invalid thinking level: {err}"
+        page.update()
+    
+    def change_model(e):
+        global MODEL_ID, MAX_CONTEXT_TOKENS
+        MODEL_ID = model_dropdown.value
+        MAX_CONTEXT_TOKENS = AVAILABLE_MODELS[MODEL_ID]["context"]
+        chat_input.hint_text = f"Ask {AVAILABLE_MODELS[MODEL_ID]['name']}..."
+        status_text.value = f"Model: {AVAILABLE_MODELS[MODEL_ID]['name']}"
         page.update()
     
     def toggle_google_search(e):
@@ -391,6 +440,14 @@ def main(page: ft.Page):
         page.update()
         
         # Run API call in thread to avoid blocking UI
+        def safe_update():
+            """Safely update page, catching disconnection errors"""
+            try:
+                if page.page:
+                    page.update()
+            except Exception:
+                pass  # Page closed or disconnected
+        
         def process_response():
             try:
                 messages = []
@@ -449,31 +506,47 @@ def main(page: ft.Page):
                         elif hasattr(part, 'text') and part.text:
                             full_text += part.text
                             response_text.value = full_text
-                            page.update()
+                            safe_update()
                 
                 # Handle charts
                 if function_call and function_call.name == "generate_chart":
                     try:
                         response_text.value = full_text + "\n\n⏳ Generating chart..."
-                        page.update()
+                        safe_update()
                         
                         chart_data = dict(function_call.args)
-                        chart_path = generate_chart(chart_data)
+                        chart_base64 = generate_chart(chart_data)
                         
                         def close_dialog(e):
                             chart_dialog.open = False
-                            page.update()
+                            safe_update()
                         
                         def export_chart(e):
-                            import shutil
-                            export_path = f"./gemdesk_chart_{int(time.time())}.png"
-                            shutil.copy(chart_path, export_path)
-                            status_text.value = f"Exported: {export_path}"
-                            page.update()
+                            def save_chart_result(e: ft.FilePickerResultEvent):
+                                if e.path:
+                                    try:
+                                        import base64
+                                        with open(e.path, 'wb') as f:
+                                            f.write(base64.b64decode(chart_base64))
+                                        status_text.value = f"Chart saved to {e.path}"
+                                        safe_update()
+                                    except Exception as err:
+                                        status_text.value = f"Export error: {str(err)[:50]}"
+                                        safe_update()
+                            
+                            chart_save_picker = ft.FilePicker(on_result=save_chart_result)
+                            page.overlay.append(chart_save_picker)
+                            safe_update()
+                            
+                            chart_save_picker.save_file(
+                                file_name=f"gemdesk_chart_{int(time.time())}.png",
+                                allowed_extensions=["png"],
+                                dialog_title="Save Chart"
+                            )
                         
                         chart_dialog = ft.AlertDialog(
                             title=ft.Text(chart_data.get('title', 'Chart')),
-                            content=ft.Image(src=chart_path, width=800, height=600, fit=ft.ImageFit.CONTAIN),
+                            content=ft.Image(src_base64=chart_base64, width=800, height=600, fit=ft.ImageFit.CONTAIN),
                             actions=[
                                 ft.TextButton("Export PNG", on_click=export_chart),
                                 ft.TextButton("Close", on_click=close_dialog)
@@ -490,7 +563,7 @@ def main(page: ft.Page):
                         full_text = f"❌ Chart error: {str(chart_err)[:100]}\n\n" + full_text
                         response_text.value = full_text
                 
-                page.update()
+                safe_update()
                 
                 state.conversation_history.append(types.Content(role="user", parts=[types.Part(text=user_query)]))
                 state.conversation_history.append(types.Content(role="model", parts=[types.Part(text=full_text)]))
@@ -503,7 +576,7 @@ def main(page: ft.Page):
                 
             except Exception as err:
                 response_text.value = f"❌ Error: {str(err)[:200]}"
-                page.update()
+                safe_update()
         
         # Start thread
         threading.Thread(target=process_response, daemon=True).start()
@@ -517,6 +590,20 @@ def main(page: ft.Page):
         file_picker.pick_files(allow_multiple=True)
     
     shelf_list = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True)
+    
+    model_dropdown = ft.Dropdown(
+        width=200,
+        height=40,
+        text_size=12,
+        value=MODEL_ID,
+        options=[
+            ft.dropdown.Option(key, AVAILABLE_MODELS[key]["name"])
+            for key in AVAILABLE_MODELS.keys()
+        ],
+        on_change=change_model,
+        label="Model",
+        tooltip="Select Gemini model"
+    )
     
     thinking_dropdown = ft.Dropdown(
         width=120,
@@ -590,7 +677,7 @@ def main(page: ft.Page):
 
     chat_list = ft.Column(expand=True, scroll=ft.ScrollMode.ALWAYS, auto_scroll=True)
     chat_input = ft.TextField(
-        hint_text=f"Ask {MODEL_ID}...",
+        hint_text=f"Ask {AVAILABLE_MODELS[MODEL_ID]['name']}...",
         border_color=ft.Colors.TRANSPARENT,
         bgcolor=ft.Colors.GREY_900,
         color=ft.Colors.WHITE,
@@ -610,6 +697,7 @@ def main(page: ft.Page):
                 ft.Text("SHELF", size=20, weight="bold", color=ft.Colors.WHITE),
                 export_btn
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            model_dropdown,
             thinking_dropdown,
             search_toggle,
             ft.Text(f"Max {MAX_FILES} files", size=10, color=ft.Colors.GREY_500),

@@ -126,16 +126,18 @@ def convert_docx_to_pdf(docx_path):
                     story.append(p)
             story.append(Spacer(1, 0.2*inch))
         
-        # Build PDF (this reads the temp images)
-        pdf_doc.build(story)
-        temp_pdf.close()
-        
-        # NOW clean up temp images after PDF is built
-        for temp_img_path in temp_image_files:
-            try:
-                os.unlink(temp_img_path)
-            except:
-                pass
+        try:
+            # Build PDF (this reads the temp images)
+            pdf_doc.build(story)
+            temp_pdf.close()
+        finally:
+            # Always clean up temp images after PDF build attempt
+            for temp_img_path in temp_image_files:
+                try:
+                    if os.path.exists(temp_img_path):
+                        os.unlink(temp_img_path)
+                except:
+                    pass
         
         return temp_pdf.name
     except ImportError:
@@ -197,8 +199,8 @@ def convert_pptx_to_pdf(pptx_path):
                             img_width = max_width
                             img_height = max_width * aspect
                         else:
-                            img_width = img.width * 0.75
-                            img_height = img.height * 0.75
+                            img_width = img.width
+                            img_height = img.height
                         
                         # Save to temp file
                         temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
@@ -256,8 +258,8 @@ def convert_pptx_to_pdf(pptx_path):
                                     img_width = max_width
                                     img_height = max_width * aspect
                                 else:
-                                    img_width = img.width * 0.75
-                                    img_height = img.height * 0.75
+                                    img_width = img.width
+                                    img_height = img.height
                                 
                                 temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
                                 img.save(temp_img.name, 'PNG')
@@ -274,16 +276,18 @@ def convert_pptx_to_pdf(pptx_path):
             if slide_num < len(prs.slides):
                 story.append(PageBreak())
         
-        # Build PDF (this reads the temp images)
-        pdf_doc.build(story)
-        temp_pdf.close()
-        
-        # NOW clean up temp images after PDF is built
-        for temp_img_path in temp_image_files:
-            try:
-                os.unlink(temp_img_path)
-            except:
-                pass
+        try:
+            # Build PDF (this reads the temp images)
+            pdf_doc.build(story)
+            temp_pdf.close()
+        finally:
+            # Always clean up temp images after PDF build attempt
+            for temp_img_path in temp_image_files:
+                try:
+                    if os.path.exists(temp_img_path):
+                        os.unlink(temp_img_path)
+                except:
+                    pass
         
         return temp_pdf.name
     except ImportError:

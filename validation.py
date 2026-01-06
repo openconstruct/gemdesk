@@ -76,6 +76,9 @@ def validate_url(url):
     Raises:
         ValidationError: If URL is invalid or dangerous
     """
+    import socket
+    import ipaddress
+    
     if not url or not isinstance(url, str):
         raise ValidationError("URL must be a non-empty string")
     
@@ -91,12 +94,36 @@ def validate_url(url):
         if parsed.scheme not in ALLOWED_URL_SCHEMES:
             raise ValidationError(f"URL scheme must be http or https, got: {parsed.scheme}")
         
-        # Check for localhost/private IPs (SSRF prevention)
-        if parsed.hostname:
-            hostname = parsed.hostname.lower()
-            if any(hostname.startswith(private) for private in 
-                   ['localhost', '127.', '10.', '172.16.', '192.168.', '169.254.']):
-                raise ValidationError("Cannot access local or private IP addresses")
+        # Check hostname exists
+        if not parsed.hostname:
+            raise ValidationError("URL must have a valid hostname")
+        
+        hostname = parsed.hostname.lower()
+        
+        # Check if hostname is an IP address
+        try:
+            ip = ipaddress.ip_address(hostname)
+            # Block private IPs, loopback, link-local
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast:
+                raise ValidationError("Cannot access private, loopback, or special-use IP addresses")
+        except ValueError:
+            # Not an IP, it's a hostname - check against blocklist
+            if hostname in ['localhost', '0.0.0.0'] or hostname.endswith('.local'):
+                raise ValidationError("Cannot access localhost or local domains")
+            
+            # Resolve hostname to check for private IPs (DNS rebinding protection)
+            try:
+                resolved_ips = socket.getaddrinfo(hostname, None)
+                for addr_info in resolved_ips:
+                    resolved_ip_str = addr_info[4][0]
+                    try:
+                        resolved_ip = ipaddress.ip_address(resolved_ip_str)
+                        if resolved_ip.is_private or resolved_ip.is_loopback or resolved_ip.is_link_local:
+                            raise ValidationError(f"Hostname resolves to private/local IP: {resolved_ip_str}")
+                    except ValueError:
+                        continue
+            except socket.gaierror:
+                pass  # DNS resolution failed, let requests handle it
         
         # Reconstruct clean URL
         return url

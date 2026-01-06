@@ -5,10 +5,10 @@ Generates charts from Gemini analysis and exports to PNG
 
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import json
-import tempfile
-import os
+import base64
+from io import BytesIO
 
 
 def generate_chart(chart_data):
@@ -36,14 +36,31 @@ def generate_chart(chart_data):
     }
     """
     try:
+        # Validate required fields
+        if not isinstance(chart_data, dict):
+            raise ValueError("Chart data must be a dictionary")
+        
+        if 'chart_type' not in chart_data:
+            raise ValueError("Missing required field: chart_type")
+        
+        if 'data' not in chart_data:
+            raise ValueError("Missing required field: data")
+        
         chart_type = chart_data.get('chart_type', 'bar').lower()
+        
+        # Validate chart type
+        valid_types = {'line', 'bar', 'pie', 'scatter'}
+        if chart_type not in valid_types:
+            raise ValueError(f"Invalid chart_type: {chart_type}. Must be one of {valid_types}")
+        
         title = chart_data.get('title', 'Chart')
         x_label = chart_data.get('x_label', '')
         y_label = chart_data.get('y_label', '')
         data = chart_data.get('data', {})
         
-        # Create figure
-        fig, ax = plt.subplots(figsize=(10, 6))
+        # Create figure using OO interface (thread-safe)
+        fig = Figure(figsize=(10, 6))
+        ax = fig.subplots()
         
         if chart_type == 'bar':
             labels = data.get('labels', [])
@@ -109,17 +126,17 @@ def generate_chart(chart_data):
         if chart_type not in ['pie']:
             ax.grid(True, alpha=0.3)
         
-        plt.tight_layout()
+        fig.tight_layout()
         
-        # Save to temp file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-        plt.savefig(temp_file.name, dpi=150, bbox_inches='tight')
-        plt.close()
+        # Save to base64 instead of temp file
+        buffer = BytesIO()
+        fig.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+        buffer.seek(0)
+        img_str = base64.b64encode(buffer.read()).decode()
         
-        return temp_file.name
+        return img_str
         
     except Exception as e:
-        plt.close()
         raise Exception(f"Failed to generate chart: {e}")
 
 

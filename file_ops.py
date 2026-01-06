@@ -106,7 +106,10 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
     original_name = file_name
     
     # Convert unsupported formats
-    if file_name.lower().endswith('.docx'):
+    if file_name.lower().endswith('.doc'):
+        # Old .doc format - not supported by Gemini, inform user
+        raise Exception("Legacy .doc format not supported. Please convert to .docx first.")
+    elif file_name.lower().endswith('.docx'):
         status_text.value = f"Converting {file_name} to PDF..."
         page.update()
         file_to_upload = convert_docx_to_pdf(file_path)
@@ -143,41 +146,42 @@ def process_file_upload(file_path, file_name, client, model_id, uploaded_files,
     with open(file_to_upload, 'rb') as file_handle:
         file_ref = client.files.upload(file=file_handle, config={'mime_type': mime_type})
     
-    # Wait for processing
-    while file_ref.state.name == "PROCESSING":
-        status_text.value = f"Processing {file_name}..."
+    try:
+        # Wait for processing
+        while file_ref.state.name == "PROCESSING":
+            status_text.value = f"Processing {file_name}..."
+            page.update()
+            time.sleep(1)
+            file_ref = client.files.get(name=file_ref.name)
+        
+        if file_ref.state.name == "FAILED":
+            raise Exception(f"Failed to process {file_name}")
+        
+        # Count tokens
+        status_text.value = f"Counting tokens..."
         page.update()
-        time.sleep(1)
-        file_ref = client.files.get(name=file_ref.name)
-    
-    if file_ref.state.name == "FAILED":
-        raise Exception(f"Failed to process {file_name}")
-    
-    # Count tokens
-    status_text.value = f"Counting tokens..."
-    page.update()
-    
-    file_token_count = client.models.count_tokens(
-        model=model_id,
-        contents=[types.Content(role="user", parts=[
-            types.Part.from_uri(file_uri=file_ref.uri, mime_type=file_ref.mime_type)
-        ])]
-    )
-    
-    # Generate thumbnail before cleanup
-    thumbnail = generate_thumbnail(file_to_upload, mime_type)
-    
-    # Clean up converted file
-    if file_to_upload != file_path:
-        os.unlink(file_to_upload)
-    
-    return {
-        "name": original_name,
-        "uri": file_ref.uri,
-        "mime": file_ref.mime_type,
-        "tokens": file_token_count.total_tokens,
-        "thumbnail": thumbnail
-    }
+        
+        file_token_count = client.models.count_tokens(
+            model=model_id,
+            contents=[types.Content(role="user", parts=[
+                types.Part.from_uri(file_uri=file_ref.uri, mime_type=file_ref.mime_type)
+            ])]
+        )
+        
+        # Generate thumbnail before cleanup
+        thumbnail = generate_thumbnail(file_to_upload, mime_type)
+        
+        return {
+            "name": original_name,
+            "uri": file_ref.uri,
+            "mime": file_ref.mime_type,
+            "tokens": file_token_count.total_tokens,
+            "thumbnail": thumbnail
+        }
+    finally:
+        # Always clean up converted file
+        if file_to_upload != file_path and os.path.exists(file_to_upload):
+            os.unlink(file_to_upload)
 
 
 def handle_file_upload(e, uploaded_files, max_files, client, model_id,
@@ -267,18 +271,22 @@ def handle_url_add(url_input, uploaded_files, max_files, client, model_id,
             
             temp_file_path = download_file_from_url(url)
             
-            from urllib.parse import urlparse
-            url_path = urlparse(url).path
-            filename = url_path.split('/')[-1] if url_path else 'downloaded_file'
-            
-            mime_type = get_mime_type(temp_file_path)
-            
-            file_info = process_file_upload(
-                temp_file_path, filename, client, model_id, uploaded_files,
-                status_text, page, mime_type
-            )
-            uploaded_files.append(file_info)
-            os.unlink(temp_file_path)
+            try:
+                from urllib.parse import urlparse
+                url_path = urlparse(url).path
+                filename = url_path.split('/')[-1] if url_path else 'downloaded_file'
+                
+                mime_type = get_mime_type(temp_file_path)
+                
+                file_info = process_file_upload(
+                    temp_file_path, filename, client, model_id, uploaded_files,
+                    status_text, page, mime_type
+                )
+                uploaded_files.append(file_info)
+            finally:
+                # Always clean up downloaded file
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
             
             status_text.value = "Ready."
             rebuild_shelf_fn()
